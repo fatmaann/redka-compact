@@ -18,7 +18,6 @@ using redka::io::Acceptor;
 using redka::io::Executor;
 using redka::io::TcpSocket;
 
-/*
 // Hash table: u128 -> (std::streampos, u32)
 // Why two values? Offset and length -- for faster reading from WAL (and not to
 // search for the '\n')
@@ -100,16 +99,16 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
 
 // Handle the client connection
 CoroResult<void> handleClient(TcpSocket socket) {
-    char buffer[1024];
+    std::array<char, 1024> buffer;
+
     while (true) {
-        memset(buffer, 0, sizeof(buffer));
-        int bytesRead = read(clientSocket, buffer, sizeof(buffer));
+        size_t bytesRead = co_await socket.ReadSome(buffer);
         if (bytesRead <= 0) {
             std::cout << "Client disconnected or error reading" << std::endl;
             break;
         }
 
-        std::string message(buffer);
+        std::string message(buffer.begin(), buffer.begin() + bytesRead);
         std::cout << "Received message: " << message << std::endl;
 
         // TODO Handle queries (need to implement merge)
@@ -121,7 +120,7 @@ CoroResult<void> handleClient(TcpSocket socket) {
             std::cerr << "Bad message received, parsing error" << std::endl;
 
             std::string errorMessage = "Invalid message format";
-            send(clientSocket, errorMessage.c_str(), errorMessage.length(), 0);
+            co_await socket.WriteAll(std::span(errorMessage.c_str(), errorMessage.length()));
         }
 
         if (!isUpdate) {
@@ -133,26 +132,12 @@ CoroResult<void> handleClient(TcpSocket socket) {
             walEntry << "{@" << currentIndex << " " << record << "}";
             writeWALToFile(walEntry.str(), "wal.log", currentIndex);
 
-            send(clientSocket, currentIndex.c_str(), currentIndex.length(), 0);
+            co_await socket.WriteAll(std::span(currentIndex.c_str(), currentIndex.length()));
         } else {
             writeWALToFile(record, "wal.log", indexToUpdate);
 
-            send(clientSocket, indexToUpdate.c_str(), indexToUpdate.length(), 0);
+            co_await socket.WriteAll(std::span(indexToUpdate.c_str(), indexToUpdate.length()));
         }
-    }
-}
-*/
-
-CoroResult<void> handleClient(TcpSocket socket) {
-    std::array<char, 1024> buf;
-    for (;;) {
-        size_t read = co_await socket.ReadSome(buf);
-        if (read == 0) {
-            std::cout << "closed" << std::endl;
-            co_return;
-        }
-
-        co_await socket.WriteAll(std::span(buf.data(), read));
     }
 }
 
