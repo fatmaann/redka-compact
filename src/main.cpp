@@ -1,6 +1,6 @@
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "net.h"
+#include "executor.h"
+#include "coro_task.h"
 
 #include <cstring>
 #include <fstream>
@@ -11,8 +11,14 @@
 #include <tuple>
 #include <unordered_map>
 
-#include "uuid_v4.h"
+//#include "uuid_v4.h"
 
+using redka::io::CoroResult;
+using redka::io::Acceptor;
+using redka::io::Executor;
+using redka::io::TcpSocket;
+
+/*
 // Hash table: u128 -> (std::streampos, u32)
 // Why two values? Offset and length -- for faster reading from WAL (and not to
 // search for the '\n')
@@ -93,7 +99,7 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
 }
 
 // Handle the client connection
-void handleClient(int clientSocket) {
+CoroResult<void> handleClient(TcpSocket socket) {
     char buffer[1024];
     while (true) {
         memset(buffer, 0, sizeof(buffer));
@@ -134,16 +140,26 @@ void handleClient(int clientSocket) {
             send(clientSocket, indexToUpdate.c_str(), indexToUpdate.length(), 0);
         }
     }
-    close(clientSocket);
+}
+*/
+
+CoroResult<void> handleClient(TcpSocket socket) {
+    std::array<char, 1024> buf;
+    for (;;) {
+        size_t read = co_await socket.ReadSome(buf);
+        if (read == 0) {
+            std::cout << "closed" << std::endl;
+            co_return;
+        }
+
+        co_await socket.WriteAll(std::span(buf.data(), read));
+    }
 }
 
 // Set up the server and listen for client connections
 void startServer() {
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket < 0) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
-    }
+    using redka::io::Acceptor;
+    using redka::io::Executor;
 
     struct sockaddr_in serverAddr, clientAddr;
     socklen_t addrLen = sizeof(clientAddr);
@@ -151,39 +167,29 @@ void startServer() {
     serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_port = htons(8080);
 
-    if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        perror("Bind failed");
-        close(serverSocket);
-        exit(EXIT_FAILURE);
-    }
+    auto acceptor = Acceptor::ListenOn(serverAddr);
 
-    if (listen(serverSocket, 3) < 0) {
-        perror("Listen failed");
-        close(serverSocket);
-        exit(EXIT_FAILURE);
-    }
+    Executor executor(acceptor.get());
 
-    std::cout << "Server listening on port 8080" << std::endl;
 
-    // Poll-based approach to handle incoming connections
-    while (true) {
-        int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddr, &addrLen);
-        if (clientSocket < 0) {
-            perror("Accept failed");
-            continue;
+    auto acceptTask = [](Executor* executor, Acceptor* acceptor) -> redka::io::CoroResult<void> {
+        std::cout << "Server listening on port 8080" << std::endl;
+        for (;;) {
+             executor->Schedule(handleClient(co_await acceptor->Accept()).fire_and_forgive());
         }
-        std::cout << "Client connected" << std::endl;
-        handleClient(clientSocket);
-    }
+        co_return;
+    }(&executor, acceptor.get());
 
-    close(serverSocket);
+    executor.Schedule(&acceptTask);
+    executor.Run();
+
 }
 
 int main() {
-    UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
-    UUIDv4::UUID uuid = uuidGenerator.getUUID();
-    std::string uuid_str = uuid.str();
-    std::cout << "Here's a random UUID: " << uuid_str << std::endl;
+    //UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
+    //UUIDv4::UUID uuid = uuidGenerator.getUUID();
+    //std::string uuid_str = uuid.str();
+    //std::cout << "Here's a random UUID: " << uuid_str << std::endl;
     startServer();
     return 0;
 }
