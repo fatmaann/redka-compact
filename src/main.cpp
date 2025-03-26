@@ -1,6 +1,6 @@
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "net.h"
+#include "executor.h"
+#include "coro_task.h"
 
 #include <cstring>
 #include <fstream>
@@ -11,7 +11,12 @@
 #include <tuple>
 #include <unordered_map>
 
-#include "uuid_v4.h"
+//#include "uuid_v4.h"
+
+using redka::io::CoroResult;
+using redka::io::Acceptor;
+using redka::io::Executor;
+using redka::io::TcpSocket;
 
 // Hash table: u128 -> (std::streampos, u32)
 // Why two values? Offset and length -- for faster reading from WAL (and not to
@@ -93,17 +98,17 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
 }
 
 // Handle the client connection
-void handleClient(int clientSocket) {
-    char buffer[1024];
+CoroResult<void> handleClient(TcpSocket socket) {
+    std::array<char, 1024> buffer;
+
     while (true) {
-        memset(buffer, 0, sizeof(buffer));
-        int bytesRead = read(clientSocket, buffer, sizeof(buffer));
+        size_t bytesRead = co_await socket.ReadSome(buffer);
         if (bytesRead <= 0) {
             std::cout << "Client disconnected or error reading" << std::endl;
             break;
         }
 
-        std::string message(buffer);
+        std::string message(buffer.begin(), buffer.begin() + bytesRead);
         std::cout << "Received message: " << message << std::endl;
 
         // TODO Handle queries (need to implement merge)
@@ -115,7 +120,7 @@ void handleClient(int clientSocket) {
             std::cerr << "Bad message received, parsing error" << std::endl;
 
             std::string errorMessage = "Invalid message format";
-            send(clientSocket, errorMessage.c_str(), errorMessage.length(), 0);
+            co_await socket.WriteAll(std::span(errorMessage.c_str(), errorMessage.length()));
         }
 
         if (!isUpdate) {
@@ -127,23 +132,19 @@ void handleClient(int clientSocket) {
             walEntry << "{@" << currentIndex << " " << record << "}";
             writeWALToFile(walEntry.str(), "wal.log", currentIndex);
 
-            send(clientSocket, currentIndex.c_str(), currentIndex.length(), 0);
+            co_await socket.WriteAll(std::span(currentIndex.c_str(), currentIndex.length()));
         } else {
             writeWALToFile(record, "wal.log", indexToUpdate);
 
-            send(clientSocket, indexToUpdate.c_str(), indexToUpdate.length(), 0);
+            co_await socket.WriteAll(std::span(indexToUpdate.c_str(), indexToUpdate.length()));
         }
     }
-    close(clientSocket);
 }
 
 // Set up the server and listen for client connections
 void startServer() {
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket < 0) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
-    }
+    using redka::io::Acceptor;
+    using redka::io::Executor;
 
     struct sockaddr_in serverAddr, clientAddr;
     socklen_t addrLen = sizeof(clientAddr);
@@ -151,39 +152,29 @@ void startServer() {
     serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_port = htons(8080);
 
-    if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        perror("Bind failed");
-        close(serverSocket);
-        exit(EXIT_FAILURE);
-    }
+    auto acceptor = Acceptor::ListenOn(serverAddr);
 
-    if (listen(serverSocket, 3) < 0) {
-        perror("Listen failed");
-        close(serverSocket);
-        exit(EXIT_FAILURE);
-    }
+    Executor executor(acceptor.get());
 
-    std::cout << "Server listening on port 8080" << std::endl;
 
-    // Poll-based approach to handle incoming connections
-    while (true) {
-        int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddr, &addrLen);
-        if (clientSocket < 0) {
-            perror("Accept failed");
-            continue;
+    auto acceptTask = [](Executor* executor, Acceptor* acceptor) -> redka::io::CoroResult<void> {
+        std::cout << "Server listening on port 8080" << std::endl;
+        for (;;) {
+             executor->Schedule(handleClient(co_await acceptor->Accept()).fire_and_forgive());
         }
-        std::cout << "Client connected" << std::endl;
-        handleClient(clientSocket);
-    }
+        co_return;
+    }(&executor, acceptor.get());
 
-    close(serverSocket);
+    executor.Schedule(&acceptTask);
+    executor.Run();
+
 }
 
 int main() {
-    UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
-    UUIDv4::UUID uuid = uuidGenerator.getUUID();
-    std::string uuid_str = uuid.str();
-    std::cout << "Here's a random UUID: " << uuid_str << std::endl;
+    //UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
+    //UUIDv4::UUID uuid = uuidGenerator.getUUID();
+    //std::string uuid_str = uuid.str();
+    //std::cout << "Here's a random UUID: " << uuid_str << std::endl;
     startServer();
     return 0;
 }
