@@ -1,6 +1,7 @@
 #include "net.h"
 #include "executor.h"
 #include "coro_task.h"
+#include "merge_records.cpp"
 
 #include <cstring>
 #include <fstream>
@@ -25,29 +26,39 @@ std::unordered_map<std::string, std::streampos> recordIdToOffset{};
 void writeWALToFile(const std::string &logEntry, const std::string &filename, std::string const &recordId) {
     std::ofstream logFile;
     logFile.open(filename, std::ios::app);  // Open file in append mode
-
-    if (logFile.is_open()) {
-        // Get the current offset and length, update hash table
-        std::streampos recordOffset = logFile.tellp();
-        recordIdToOffset[recordId] = recordOffset;
-        std::cout << recordOffset << std::endl;
-
-        logFile << logEntry << std::endl;
-        logFile.close();
-    } else {
+    if (!logFile.is_open()) {
         std::cerr << "Failed to open WAL file" << std::endl;
     }
-}
 
-void readFromWALFileByKey(const std::string &recordKey, const std::string &filename) {
-    auto recordPos = recordIdToOffset[recordKey];
-    std::ifstream logFile(filename);
-    std::string record;
+    // Get the current offset and length, update hash table
+    std::streampos newRecordOffset = logFile.tellp();
+    std::cout << newRecordOffset << std::endl;
 
-    logFile.seekg(recordPos);
-    getline(logFile, record);
-
-    std::cout << "read:" << record << std::endl;
+    if (recordIdToOffset.find(recordId) == recordIdToOffset.end()) {
+        recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
+        logFile << logEntry << std::endl;
+    } else {
+        auto& recordsOffsets = recordIdToOffset[recordId];
+        bool fourWritesAreTracked = true;
+        for (int i = 0; i < recordsOffsets.size(); i++) {
+            std::cout << recordsOffsets[i] << std::endl;
+            // no offset
+            if (recordsOffsets[i] == -1) {
+                recordsOffsets[i] = newRecordOffset;
+                fourWritesAreTracked = false;
+                logFile << logEntry << std::endl;
+                break;
+            }
+        }
+        if (fourWritesAreTracked) {
+            // Merge all four writes and add it
+            std::string mergedRecord = logEntry;
+            mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId, "wal.log"));
+            recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
+            logFile << "{@" << recordId << " " << mergedRecord << "}" << std::endl;
+        }
+    }
+    logFile.close();
 }
 
 bool isCorrectParentheses(char firstSymbol, char secondSymbol) {
@@ -142,12 +153,12 @@ CoroResult<void> handleClient(TcpSocket socket) {
             std::stringstream walEntry;
             walEntry << "{@" << currentIndex << " " << record << "}";
             writeWALToFile(walEntry.str(), "wal.log", currentIndex);
-            readFromWALFileByKey(currentIndex, "wal.log");
+            readFromWALFileById(currentIndex, "wal.log");
 
             co_await socket.WriteAll(std::span(currentIndex.c_str(), currentIndex.length()));
         } else {
             writeWALToFile(record, "wal.log", indexToUpdate);
-            readFromWALFileByKey(indexToUpdate, "wal.log");
+            readFromWALFileById(indexToUpdate, "wal.log");
 
             co_await socket.WriteAll(std::span(indexToUpdate.c_str(), indexToUpdate.length()));
         }
