@@ -18,10 +18,8 @@ using redka::io::Acceptor;
 using redka::io::Executor;
 using redka::io::TcpSocket;
 
-// Hash table: u128 -> (std::streampos, u32)
-// Why two values? Offset and length -- for faster reading from WAL (and not to
-// search for the '\n')
-std::unordered_map<std::string, std::tuple<std::streampos, uint32_t>> recordIdToOffset{};
+// Hash table: u128 -> std::streampos
+std::unordered_map<std::string, std::streampos> recordIdToOffset{};
 
 // Function to write WAL to a log file
 void writeWALToFile(const std::string &logEntry, const std::string &filename, std::string const &recordId) {
@@ -31,15 +29,25 @@ void writeWALToFile(const std::string &logEntry, const std::string &filename, st
     if (logFile.is_open()) {
         // Get the current offset and length, update hash table
         std::streampos recordOffset = logFile.tellp();
-        uint32_t recordLength = logEntry.length();
-        recordIdToOffset.insert({recordId, std::make_tuple(recordOffset, recordLength)});
-        std::cout << recordOffset << " " << recordLength << std::endl;
+        recordIdToOffset[recordId] = recordOffset;
+        std::cout << recordOffset << std::endl;
 
         logFile << logEntry << std::endl;
         logFile.close();
     } else {
         std::cerr << "Failed to open WAL file" << std::endl;
     }
+}
+
+void readFromWALFileByKey(const std::string &recordKey, const std::string &filename) {
+    auto recordPos = recordIdToOffset[recordKey];
+    std::ifstream logFile(filename);
+    std::string record;
+
+    logFile.seekg(recordPos);
+    getline(logFile, record);
+
+    std::cout << "read:" << record << std::endl;
 }
 
 bool isCorrectParentheses(char firstSymbol, char secondSymbol) {
@@ -63,6 +71,9 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
     // queries including it We demand that message starts and ends with "{" and
     // "}" brackets
     if (message.length() <= 2 || *message.begin() != '{' || *(message.end() - 1) != '}')
+        return false;
+    // Records are separated by "\n", so it is definitely forbidden (and also by format itself)
+    if (message.find('\n') != std::string::npos)
         return false;
 
     // First symbol always {, so in case of update second symbol must be @ marking
@@ -131,10 +142,12 @@ CoroResult<void> handleClient(TcpSocket socket) {
             std::stringstream walEntry;
             walEntry << "{@" << currentIndex << " " << record << "}";
             writeWALToFile(walEntry.str(), "wal.log", currentIndex);
+            readFromWALFileByKey(currentIndex, "wal.log");
 
             co_await socket.WriteAll(std::span(currentIndex.c_str(), currentIndex.length()));
         } else {
             writeWALToFile(record, "wal.log", indexToUpdate);
+            readFromWALFileByKey(indexToUpdate, "wal.log");
 
             co_await socket.WriteAll(std::span(indexToUpdate.c_str(), indexToUpdate.length()));
         }
