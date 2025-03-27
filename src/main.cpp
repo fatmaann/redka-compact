@@ -1,18 +1,16 @@
-#include "net.h"
-#include "executor.h"
-#include "coro_task.h"
-#include "merge_records.h"
-
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <random>
-#include <sstream>
 #include <string>
 #include <tuple>
 #include <unordered_map>
 
-//#include "uuid_v4.h"
+#include "coro_task.h"
+#include "executor.h"
+#include "merge_records.h"
+#include "net.h"
+#include "uuid_v4.h"
 
 using redka::io::CoroResult;
 using redka::io::Acceptor;
@@ -20,18 +18,23 @@ using redka::io::Executor;
 using redka::io::TcpSocket;
 
 
+const std::string WAL_FILENAME = "wal.log";
+
 // Hash table: u128 -> std::streampos[4]
 std::unordered_map<std::string, std::array<std::streampos, 4>> recordIdToOffset{};
+UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
+
+// Response codes, starting from 1: errors
+const int RDKAnone = 0;
+const int RDKAbad = 1;
+const int RDXbad = 2;
 
 
 std::string readFromWALFileByOffset(const std::streampos recordPos, const std::string &filename) {
     std::ifstream logFile(filename);
     std::string record;
-
     logFile.seekg(recordPos);
     getline(logFile, record);
-
-    std::cout << "read: " << recordPos << " " << record << std::endl;
     return record;
 }
 
@@ -42,9 +45,8 @@ std::string readFromWALFileById(const std::string &recordId, const std::string &
         if (recordOffset == -1)
             break;
 
-        auto previousLogEntry = readFromWALFileByOffset(recordOffset, "wal.log");
+        auto previousLogEntry = readFromWALFileByOffset(recordOffset, WAL_FILENAME);
         mergedRecord = mergeTwoRecords(mergedRecord, previousLogEntry);
-        std::cout << mergedRecord << std::endl;
     }
     return mergedRecord;
 }
@@ -60,19 +62,16 @@ void writeWALToFile(const std::string &logEntry, const std::string &filename, st
 
     // Get the current offset and length, update hash table
     std::streampos newRecordOffset = logFile.tellp();
-    std::cout << newRecordOffset << std::endl;
-
     if (recordIdToOffset.find(recordId) == recordIdToOffset.end()) {
         recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
         logFile << logEntry << std::endl;
     } else {
         auto& recordsOffsets = recordIdToOffset[recordId];
         bool fourWritesAreTracked = true;
-        for (int i = 0; i < recordsOffsets.size(); i++) {
-            std::cout << recordsOffsets[i] << std::endl;
+        for (auto & recordsOffset : recordsOffsets) {
             // no offset
-            if (recordsOffsets[i] == -1) {
-                recordsOffsets[i] = newRecordOffset;
+            if (recordsOffset == -1) {
+                recordsOffset = newRecordOffset;
                 fourWritesAreTracked = false;
                 logFile << logEntry << std::endl;
                 break;
@@ -81,7 +80,7 @@ void writeWALToFile(const std::string &logEntry, const std::string &filename, st
         if (fourWritesAreTracked) {
             // Merge all four writes and add it
             std::string mergedRecord = logEntry;
-            mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId, "wal.log"));
+            mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId, WAL_FILENAME));
             recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
             logFile << "{@" << recordId << " " << mergedRecord << "}" << std::endl;
         }
@@ -128,8 +127,6 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
         if (!isCorrectParentheses(message[spacePos + 1], message[message.size() - 2]))
             return false;
 
-        // TODO replace with try_to... with returning false OR change other 'return
-        // false' to throw error
         updateIndex = message.substr(2, spacePos - 2);
         if (message[spacePos + 1] != '{') {
             record = "{" + message.substr(spacePos + 1, message.size() - spacePos - 2) + "}";
@@ -147,6 +144,17 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
     return true;
 }
 
+bool parseMessage(const std::string &message, std::string &objectData, bool &isRead,
+                  bool &isUpdate, std::string &updateIndex) {
+    if (message.find('{') == std::string::npos && message.find('}') == std::string::npos && *message.begin() != '@') {
+        // Got read query: only reference of object
+        isRead = true;
+        objectData = message;
+        return true;
+    }
+    return parseWriteMessage(message, objectData, isUpdate, updateIndex);
+}
+
 // Handle the client connection
 CoroResult<void> handleClient(TcpSocket socket) {
     std::array<char, 1024> buffer;
@@ -154,41 +162,69 @@ CoroResult<void> handleClient(TcpSocket socket) {
     while (true) {
         size_t bytesRead = co_await socket.ReadSome(buffer);
         if (bytesRead <= 0) {
-            std::cout << "Client disconnected or error reading" << std::endl;
+            co_await socket.WriteAll(std::span(std::to_string(RDKAbad).c_str(), 1));
             break;
         }
 
         std::string message(buffer.begin(), buffer.begin() + bytesRead);
-        std::cout << "Received message: " << message << std::endl;
-
-        // TODO Handle queries (need to implement merge)
-        std::string record;
+        std::string idOrRecord;
+        bool isRead = false;
         bool isUpdate = false;
-        std::string indexToUpdate;
-        if (!parseWriteMessage(message, record, isUpdate, indexToUpdate)) {
-            // TODO send to client corresponding error (need to int...)
-            std::cerr << "Bad message received, parsing error" << std::endl;
+        std::string idOfRecordToUpdate;
 
-            std::string errorMessage = "Invalid message format";
-            co_await socket.WriteAll(std::span(errorMessage.c_str(), errorMessage.length()));
+        bool gorParseError = false;
+        try {
+            if (!parseMessage(message, idOrRecord, isRead, isUpdate, idOfRecordToUpdate)) {
+                co_await socket.WriteAll(std::span(std::to_string(RDKAbad).c_str(), 1));
+                break;
+            }
+        }
+        catch (...) {
+            gorParseError = true;
+            // 'co_await' cannot be used in the handler of a try block
+        }
+        if (gorParseError) {
+            co_await socket.WriteAll(std::span(std::to_string(RDXbad).c_str(), 1));
+            break;
+        }
+
+        // Read query
+        if (isRead) {
+            // Check if is correct UUID by trying to parse it
+            bool gotUnclearID = false;
+            try {
+                UUIDv4::UUID::fromStrFactory(idOrRecord);
+            }
+            catch (...) {
+                gotUnclearID = true;
+            }
+            if (gotUnclearID) {
+                co_await socket.WriteAll(std::span(std::to_string(RDKAbad).c_str(), 1));
+                break;
+            }
+
+            // Key not found
+            if (recordIdToOffset.find(idOrRecord) == recordIdToOffset.end()) {
+                co_await socket.WriteAll(std::span(std::to_string(RDKAnone).c_str(), 1));
+                break;
+            }
+            auto requestedRecord = readFromWALFileById(idOrRecord, WAL_FILENAME);
+            co_await socket.WriteAll(std::span(requestedRecord.c_str(), requestedRecord.length()));
+            break;
         }
 
         if (!isUpdate) {
-            // TODO Replace with uuid (for easier string representation) - but will
-            // need to use another external library
-            std::string currentIndex = "b0b-1";
-
+            // Create query
+            UUIDv4::UUID uuid = uuidGenerator.getUUID();
+            std::string newID = uuid.str();
             std::stringstream walEntry;
-            walEntry << "{@" << currentIndex << " " << record << "}";
-            writeWALToFile(walEntry.str(), "wal.log", currentIndex);
-            readFromWALFileById(currentIndex, "wal.log");
-
-            co_await socket.WriteAll(std::span(currentIndex.c_str(), currentIndex.length()));
+            walEntry << "{@" << newID << " " << idOrRecord << "}";
+            writeWALToFile(walEntry.str(), WAL_FILENAME, newID);
+            co_await socket.WriteAll(std::span(newID.c_str(), newID.length()));
         } else {
-            writeWALToFile(record, "wal.log", indexToUpdate);
-            readFromWALFileById(indexToUpdate, "wal.log");
-
-            co_await socket.WriteAll(std::span(indexToUpdate.c_str(), indexToUpdate.length()));
+            // Update query
+            writeWALToFile(idOrRecord, WAL_FILENAME, idOfRecordToUpdate);
+            co_await socket.WriteAll(std::span(idOfRecordToUpdate.c_str(), idOfRecordToUpdate.length()));
         }
     }
 }
@@ -223,10 +259,6 @@ void startServer() {
 }
 
 int main() {
-    //UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
-    //UUIDv4::UUID uuid = uuidGenerator.getUUID();
-    //std::string uuid_str = uuid.str();
-    //std::cout << "Here's a random UUID: " << uuid_str << std::endl;
     startServer();
     return 0;
 }

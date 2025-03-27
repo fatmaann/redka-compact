@@ -21,7 +21,7 @@ endif()
 
 # Add the uuid_v4 library as a subdirectory.
 # Assuming you've added the uuid_v4 library in the "external/uuid_v4" directory.
-# add_subdirectory(external/uuid_v4)
+add_subdirectory(external/uuid_v4)
 
 # Link the uuid_v4 target with your executable.
-# target_link_libraries(RedkaTalk PRIVATE uuid_v4::uuid_v4)
+target_link_libraries(RedkaTalk PRIVATE uuid_v4::uuid_v4)
