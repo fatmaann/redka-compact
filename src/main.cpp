@@ -19,8 +19,36 @@ using redka::io::Acceptor;
 using redka::io::Executor;
 using redka::io::TcpSocket;
 
-// Hash table: u128 -> std::streampos
-std::unordered_map<std::string, std::streampos> recordIdToOffset{};
+
+// Hash table: u128 -> std::streampos[4]
+std::unordered_map<std::string, std::array<std::streampos, 4>> recordIdToOffset{};
+
+
+std::string readFromWALFileByOffset(const std::streampos recordPos, const std::string &filename) {
+    std::ifstream logFile(filename);
+    std::string record;
+
+    logFile.seekg(recordPos);
+    getline(logFile, record);
+
+    std::cout << "read: " << recordPos << " " << record << std::endl;
+    return record;
+}
+
+std::string readFromWALFileById(const std::string &recordId, const std::string &filename) {
+    std::string mergedRecord;
+    auto recordsOffsets = recordIdToOffset[recordId];
+    for (auto & recordOffset : recordsOffsets) {
+        if (recordOffset == -1)
+            break;
+
+        auto previousLogEntry = readFromWALFileByOffset(recordOffset, "wal.log");
+        mergedRecord = mergeTwoRecords(mergedRecord, previousLogEntry);
+        std::cout << mergedRecord << std::endl;
+    }
+    return mergedRecord;
+}
+
 
 // Function to write WAL to a log file
 void writeWALToFile(const std::string &logEntry, const std::string &filename, std::string const &recordId) {
