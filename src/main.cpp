@@ -1,7 +1,7 @@
 #include "net.h"
 #include "executor.h"
 #include "coro_task.h"
-#include "merge_records.cpp"
+#include "merge_records.h"
 
 #include <cstring>
 #include <fstream>

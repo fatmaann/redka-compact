@@ -347,34 +347,3 @@ public:
         return merged_fields.empty() ? "" : serializeFields(merged_fields);
     }
 };
-
-int main() {
-    LSMTree db;
-    
-    // Тестирование версионирования
-    // db.put("b0b-1", "{name:\"Alena\" age:25}");
-    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    // db.put("b0b-1", "{name:\"Alena\" age:26 address:\"Moscow\"}");
-    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    // db.put("b0b-1", "{address@2:\"SPb\"}");
-
-    // for (size_t i = 0; i < 1; i++) {
-    //     db.put("b0b-5", "{name:\"Dima\"}");
-    //     db.put("b0b-6", "{name:\"Dima\"}");
-    //     db.put("b0b-7", "{name:\"Dima\"}");
-    //     db.put("b0b-8", "{name:\"Dima\"}");
-    //     db.put("b0b-9", "{name:\"Dima\"}");
-    //     db.put("b0b-10", "{name:\"Dima\"}");
-    //     db.put("b0b-11", "{name:\"Dima\"}");
-    //     db.put("b0b-12", "{name:\"Dima\"}");
-    //     db.put("b0b-13", "{name:\"Dima\"}");
-    // }
-    
-    // db.flushWalToL0();
-    
-    std::cout << "b0b-1: " << db.get("b0b-1") << std::endl;
-    // Вывод: {address@2:SPb age:26 name:Alena}
-    std::cout << "b0b-4: " << db.get("b0b-4") << std::endl;
-    
-    return 0;
-}
