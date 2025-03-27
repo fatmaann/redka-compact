@@ -17,8 +17,8 @@ using redka::io::Acceptor;
 using redka::io::Executor;
 using redka::io::TcpSocket;
 
-
 const std::string WAL_FILENAME = "wal.log";
+// LSMTree db;
 
 // Hash table: u128 -> std::streampos[4]
 std::unordered_map<std::string, std::array<std::streampos, 4>> recordIdToOffset{};
@@ -30,32 +30,37 @@ const int RDKAbad = 1;
 const int RDXbad = 2;
 
 
-std::string readFromWALFileByOffset(const std::streampos recordPos, const std::string &filename) {
-    std::ifstream logFile(filename);
+std::string readFromWALFileByOffset(const std::streampos recordPos) {
+    std::ifstream logFile(WAL_FILENAME);
     std::string record;
     logFile.seekg(recordPos);
     getline(logFile, record);
     return record;
 }
 
-std::string readFromWALFileById(const std::string &recordId, const std::string &filename) {
+std::string readFromWALFileById(const std::string &recordId) {
     std::string mergedRecord;
     auto recordsOffsets = recordIdToOffset[recordId];
     for (auto & recordOffset : recordsOffsets) {
         if (recordOffset == -1)
             break;
 
-        auto previousLogEntry = readFromWALFileByOffset(recordOffset, WAL_FILENAME);
+        auto previousLogEntry = readFromWALFileByOffset(recordOffset);
         mergedRecord = mergeTwoRecords(mergedRecord, previousLogEntry);
     }
     return mergedRecord;
 }
 
+std::string readRecordById(const std::string &recordId) {
+    auto walRecord = readFromWALFileById(recordId);
+    // auto sstRecord = db.get(recordId);
+    // return mergeTwoRecords(walRecord, sstRecord);
+}
 
 // Function to write WAL to a log file
-void writeWALToFile(const std::string &logEntry, const std::string &filename, std::string const &recordId) {
+void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
     std::ofstream logFile;
-    logFile.open(filename, std::ios::app);  // Open file in append mode
+    logFile.open(WAL_FILENAME, std::ios::app);  // Open file in append mode
     if (!logFile.is_open()) {
         std::cerr << "Failed to open WAL file" << std::endl;
     }
@@ -80,7 +85,7 @@ void writeWALToFile(const std::string &logEntry, const std::string &filename, st
         if (fourWritesAreTracked) {
             // Merge all four writes and add it
             std::string mergedRecord = logEntry;
-            mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId, WAL_FILENAME));
+            mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId));
             recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
             logFile << "{@" << recordId << " " << mergedRecord << "}" << std::endl;
         }
@@ -208,7 +213,7 @@ CoroResult<void> handleClient(TcpSocket socket) {
                 co_await socket.WriteAll(std::span(std::to_string(RDKAnone).c_str(), 1));
                 break;
             }
-            auto requestedRecord = readFromWALFileById(idOrRecord, WAL_FILENAME);
+            auto requestedRecord = readFromWALFileById(idOrRecord);
             co_await socket.WriteAll(std::span(requestedRecord.c_str(), requestedRecord.length()));
             break;
         }
@@ -219,11 +224,11 @@ CoroResult<void> handleClient(TcpSocket socket) {
             std::string newID = uuid.str();
             std::stringstream walEntry;
             walEntry << "{@" << newID << " " << idOrRecord << "}";
-            writeWALToFile(walEntry.str(), WAL_FILENAME, newID);
+            writeWALToFile(walEntry.str(), newID);
             co_await socket.WriteAll(std::span(newID.c_str(), newID.length()));
         } else {
             // Update query
-            writeWALToFile(idOrRecord, WAL_FILENAME, idOfRecordToUpdate);
+            writeWALToFile(idOrRecord, idOfRecordToUpdate);
             co_await socket.WriteAll(std::span(idOfRecordToUpdate.c_str(), idOfRecordToUpdate.length()));
         }
     }
