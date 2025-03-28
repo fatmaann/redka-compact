@@ -42,8 +42,6 @@ namespace redka::io {
         CoroResult<size_t> ReadSome(std::span<char> view);
 
         CoroResult<size_t> ReadAll(std::span<char> view);
-
-        //CoroResult<void> Close();
     private:
         Acceptor* parent_;
         int fd_{};
@@ -51,6 +49,7 @@ namespace redka::io {
 
     class Acceptor {
         struct PrivateTag {};
+        friend class TcpSocket;
 
         enum class EventType {
             read,

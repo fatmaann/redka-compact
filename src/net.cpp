@@ -52,6 +52,8 @@ namespace redka::io {
         if (fd_) {
             close(fd_);
         }
+
+        parent_->events_.erase(fd_);
     }
 
     Acceptor::~Acceptor() {
@@ -108,6 +110,7 @@ namespace redka::io {
 
         pollfds_.clear();
 
+        //TODO fixed array of fds, just turn unused to -1
         std::ranges::copy(
             events_
             | rv::filter([](const auto& kv) {
@@ -153,7 +156,7 @@ namespace redka::io {
     }
 
     void Acceptor::BindListen() {
-        if ((serverfd_ = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        if ((serverfd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1) {
             throw std::runtime_error{"socket creation failed"};
         }
 
