@@ -1,9 +1,8 @@
 #include "compact.h"
-
 #include "mapped_file.h"
+#include "merge_records.h"
 
 
-// Реализация методов LSMTree
 LSMTree::LSMTree() {
     ensureDbDir();
     loadLevels();
@@ -54,20 +53,20 @@ void LSMTree::compactLevel(int level) {
     if (level >= levels.size())
         return;
 
-    std::map<std::string, SSTEntry> merged_entries;
+    if (levels[level].size() >= std::pow(10, level + 1)) {
+        std::map<std::string, SSTEntry> merged_entries;
 
-    for (const auto &sst_path : levels[level]) {
-        auto entries = readSST(sst_path);
-        for (const auto &entry : entries) {
-            if (merged_entries.find(entry.key) == merged_entries.end()) {
-                merged_entries[entry.key] = entry;
-            } else {
-                mergeEntries(merged_entries[entry.key], entry);
+        for (const auto &sst_path : levels[level]) {
+            auto entries = readSST(sst_path);
+            for (const auto &entry : entries) {
+                if (merged_entries.find(entry.key) == merged_entries.end()) {
+                    merged_entries[entry.key] = entry;
+                } else {
+                    mergeEntries(merged_entries[entry.key], entry);
+                }
             }
         }
-    }
 
-    if (merged_entries.size() >= LEVEL_BASE_SIZE * std::pow(10, level)) {
         std::vector<SSTEntry> entries_to_write;
         for (auto &[key, entry] : merged_entries) {
             entries_to_write.push_back(std::move(entry));
@@ -75,7 +74,7 @@ void LSMTree::compactLevel(int level) {
         std::sort(entries_to_write.begin(), entries_to_write.end());
 
         std::string new_sst = DB_DIR + "/L" + std::to_string(level + 1) + "/" +
-                              std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
+                            std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
         writeSST(new_sst, entries_to_write);
 
         for (const auto &sst_path : levels[level]) {
@@ -249,20 +248,6 @@ void LSMTree::writeSST(const std::string &path, const std::vector<SSTEntry> &ent
     }
 
     memcpy(data + header.index_offset, index.data(), index.size() * sizeof(SSTIndexEntry));
-}
-
-std::string LSMTree::mergeTwoRecords(const std::string &firstRecord, const std::string &secondRecord) {
-    auto firstMap = parseFields(firstRecord);
-    auto secondMap = parseFields(secondRecord);
-
-    for (const auto &[field, fv] : secondMap) {
-        auto it = firstMap.find(field);
-        if (it == firstMap.end() || fv.version > it->second.version) {
-            firstMap[field] = fv;
-        }
-    }
-
-    return serializeFields(firstMap);
 }
 
 void LSMTree::put(const std::string &key, const std::string &value) {

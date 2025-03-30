@@ -20,11 +20,9 @@
 
 namespace fs = std::filesystem;
 
-// Конфигурационные константы
 const size_t LEVEL_BASE_SIZE = 10;
 const std::string DB_DIR = "lsm_db";
 
-// Структуры для хранения данных
 #pragma pack(push, 1)
 struct SSTHeader {
     uint32_t entry_count;
@@ -52,12 +50,10 @@ struct SSTEntry {
     }
 };
 
-// Основной класс LSM-дерева
 class LSMTree {
 private:
     std::vector<std::vector<std::string>> levels;
 
-    // Внутренние методы
     void ensureDbDir();
     void loadLevels();
     void mergeEntries(SSTEntry &target, const SSTEntry &source);
@@ -66,7 +62,6 @@ private:
     std::map<std::string, FieldValue> parseFields(const std::string &data);
     std::string serializeFields(const std::map<std::string, FieldValue> &fields);
     void writeSST(const std::string &path, const std::vector<SSTEntry> &entries);
-    std::string mergeTwoRecords(const std::string &firstRecord, const std::string &secondRecord);
 
 public:
     LSMTree();
@@ -75,4 +70,4 @@ public:
     std::string get(const std::string &key);
 };
 
-#endif  // LSM_TREE_H
+#endif
