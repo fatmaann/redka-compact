@@ -1,65 +1,7 @@
 #include "compact.h"
 
-// Реализация методов MappedFile
-MappedFile::~MappedFile() {
-    if (mapped_data) {
-        munmap(mapped_data, file_size);
-    }
-    if (fd != -1) {
-        close(fd);
-    }
-}
+#include "mapped_file.h"
 
-bool MappedFile::open(const std::string &path, bool write) {
-    fd = ::open(path.c_str(), write ? (O_RDWR | O_CREAT) : O_RDONLY, 0644);
-    if (fd == -1) return false;
-
-    struct stat st;
-    if (fstat(fd, &st) == -1) {
-        close(fd);
-        fd = -1;
-        return false;
-    }
-
-    file_size = st.st_size;
-    if (file_size == 0 && write) {
-        file_size = 4096;
-        if (ftruncate(fd, file_size) == -1) {
-            close(fd);
-            fd = -1;
-            return false;
-        }
-    }
-
-    mapped_data = mmap(nullptr, file_size,
-                     write ? (PROT_READ | PROT_WRITE) : PROT_READ,
-                     MAP_SHARED, fd, 0);
-    if (mapped_data == MAP_FAILED) {
-        mapped_data = nullptr;
-        close(fd);
-        fd = -1;
-        return false;
-    }
-
-    return true;
-}
-
-void *MappedFile::data() const { return mapped_data; }
-size_t MappedFile::size() const { return file_size; }
-
-bool MappedFile::resize(size_t new_size) {
-    if (munmap(mapped_data, file_size)) return false;
-    if (ftruncate(fd, new_size)) return false;
-
-    mapped_data = mmap(nullptr, new_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (mapped_data == MAP_FAILED) {
-        mapped_data = nullptr;
-        return false;
-    }
-
-    file_size = new_size;
-    return true;
-}
 
 // Реализация методов LSMTree
 LSMTree::LSMTree() {
@@ -80,7 +22,8 @@ void LSMTree::loadLevels() {
     levels.clear();
     for (int i = 0;; ++i) {
         std::string level_dir = DB_DIR + "/L" + std::to_string(i);
-        if (!fs::exists(level_dir)) break;
+        if (!fs::exists(level_dir))
+            break;
 
         std::vector<std::string> files;
         for (const auto &entry : fs::directory_iterator(level_dir)) {
@@ -94,7 +37,7 @@ void LSMTree::loadLevels() {
     }
 }
 
-void LSMTree::mergeEntries(SSTEntry& target, const SSTEntry& source) {
+void LSMTree::mergeEntries(SSTEntry &target, const SSTEntry &source) {
     std::string target_record = serializeFields(target.fields);
     std::string source_record = serializeFields(source.fields);
     std::string target_record_with_braces = "{" + target_record + "}";
@@ -108,7 +51,8 @@ void LSMTree::mergeEntries(SSTEntry& target, const SSTEntry& source) {
 }
 
 void LSMTree::compactLevel(int level) {
-    if (level >= levels.size()) return;
+    if (level >= levels.size())
+        return;
 
     std::map<std::string, SSTEntry> merged_entries;
 
@@ -131,7 +75,7 @@ void LSMTree::compactLevel(int level) {
         std::sort(entries_to_write.begin(), entries_to_write.end());
 
         std::string new_sst = DB_DIR + "/L" + std::to_string(level + 1) + "/" +
-                            std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
+                              std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
         writeSST(new_sst, entries_to_write);
 
         for (const auto &sst_path : levels[level]) {
@@ -145,17 +89,20 @@ void LSMTree::compactLevel(int level) {
 
 std::vector<SSTEntry> LSMTree::readSST(const std::string &path) {
     MappedFile file;
-    if (!file.open(path)) return {};
+    if (!file.open(path))
+        return {};
 
     const char *data = static_cast<const char *>(file.data());
     size_t size = file.size();
 
-    if (size < sizeof(SSTHeader)) return {};
+    if (size < sizeof(SSTHeader))
+        return {};
 
     SSTHeader header;
     memcpy(&header, data, sizeof(header));
 
-    if (header.entry_count == 0) return {};
+    if (header.entry_count == 0)
+        return {};
 
     size_t index_offset = header.index_offset;
     if (index_offset + header.entry_count * sizeof(SSTIndexEntry) > size) {
@@ -180,8 +127,7 @@ std::vector<SSTEntry> LSMTree::readSST(const std::string &path) {
         }
 
         std::string key(entry_data + sizeof(total_len), idx.key_length);
-        std::string fields_data(entry_data + sizeof(total_len) + idx.key_length,
-                              total_len - idx.key_length);
+        std::string fields_data(entry_data + sizeof(total_len) + idx.key_length, total_len - idx.key_length);
 
         SSTEntry entry;
         entry.key = key;
@@ -200,9 +146,8 @@ std::map<std::string, FieldValue> LSMTree::parseFields(const std::string &data) 
         content = content.substr(1, content.size() - 2);
     }
 
-    std::regex field_re(
-        R"((\w+)(@(\d+))?:)"
-        R"((?:("(?:[^"]|\\")*")|([^ }]+)))");
+    std::regex field_re(R"((\w+)(@(\d+))?:)"
+                        R"((?:("(?:[^"]|\\")*")|([^ }]+)))");
 
     std::smatch match;
     std::string::const_iterator search_start(content.cbegin());
@@ -306,17 +251,17 @@ void LSMTree::writeSST(const std::string &path, const std::vector<SSTEntry> &ent
     memcpy(data + header.index_offset, index.data(), index.size() * sizeof(SSTIndexEntry));
 }
 
-std::string LSMTree::mergeTwoRecords(const std::string& firstRecord, const std::string& secondRecord) {
+std::string LSMTree::mergeTwoRecords(const std::string &firstRecord, const std::string &secondRecord) {
     auto firstMap = parseFields(firstRecord);
     auto secondMap = parseFields(secondRecord);
-    
-    for (const auto& [field, fv] : secondMap) {
+
+    for (const auto &[field, fv] : secondMap) {
         auto it = firstMap.find(field);
         if (it == firstMap.end() || fv.version > it->second.version) {
             firstMap[field] = fv;
         }
     }
-    
+
     return serializeFields(firstMap);
 }
 
@@ -324,22 +269,22 @@ void LSMTree::put(const std::string &key, const std::string &value) {
     SSTEntry entry;
     entry.key = key;
     entry.fields = parseFields(value);
-    
+
     std::vector<SSTEntry> entries;
     entries.push_back(entry);
-    
-    std::string sst_path = DB_DIR + "/L0/" +
-        std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
+
+    std::string sst_path =
+        DB_DIR + "/L0/" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
     writeSST(sst_path, entries);
-    
+
     loadLevels();
     compactLevel(0);
 }
 
-void LSMTree::flushBatchToL0(const std::vector<std::pair<std::string, std::string>>& batch) {
+void LSMTree::flushBatchToL0(const std::vector<std::pair<std::string, std::string>> &batch) {
     std::map<std::string, SSTEntry> latest_entries;
 
-    for (const auto& [key, value] : batch) {
+    for (const auto &[key, value] : batch) {
         SSTEntry new_entry;
         new_entry.key = key;
         new_entry.fields = parseFields(value);
@@ -354,11 +299,11 @@ void LSMTree::flushBatchToL0(const std::vector<std::pair<std::string, std::strin
     }
 
     std::vector<SSTEntry> entries;
-    for (auto& [key, entry] : latest_entries) {
+    for (auto &[key, entry] : latest_entries) {
         entries.push_back(std::move(entry));
     }
-    std::string sst_path = DB_DIR + "/L0/" +
-        std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
+    std::string sst_path =
+        DB_DIR + "/L0/" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + ".sst";
     writeSST(sst_path, entries);
     loadLevels();
     compactLevel(0);
@@ -371,9 +316,8 @@ std::string LSMTree::get(const std::string &key) {
     for (const auto &level : levels) {
         for (const auto &sst_path : level) {
             auto entries = readSST(sst_path);
-            auto it = std::lower_bound(
-                entries.begin(), entries.end(), key,
-                [](const SSTEntry &e, const std::string &k) { return e.key < k; });
+            auto it = std::lower_bound(entries.begin(), entries.end(), key,
+                                       [](const SSTEntry &e, const std::string &k) { return e.key < k; });
 
             if (it != entries.end() && it->key == key) {
                 for (const auto &[field, fv] : it->fields) {

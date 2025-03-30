@@ -1,21 +1,22 @@
 #ifndef LSM_TREE_H
 #define LSM_TREE_H
 
-#include <iostream>
-#include <string>
-#include <vector>
-#include <map>
-#include <filesystem>
-#include <chrono>
-#include <algorithm>
-#include <cmath>
-#include <sstream>
-#include <regex>
-#include <sys/mman.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -51,23 +52,6 @@ struct SSTEntry {
     }
 };
 
-// Класс для работы с memory-mapped файлами
-class MappedFile {
-private:
-    int fd = -1;
-    void *mapped_data = nullptr;
-    size_t file_size = 0;
-
-public:
-    MappedFile() = default;
-    ~MappedFile();
-    
-    bool open(const std::string &path, bool write = false);
-    void *data() const;
-    size_t size() const;
-    bool resize(size_t new_size);
-};
-
 // Основной класс LSM-дерева
 class LSMTree {
 private:
@@ -76,19 +60,19 @@ private:
     // Внутренние методы
     void ensureDbDir();
     void loadLevels();
-    void mergeEntries(SSTEntry& target, const SSTEntry& source);
+    void mergeEntries(SSTEntry &target, const SSTEntry &source);
     void compactLevel(int level);
     std::vector<SSTEntry> readSST(const std::string &path);
     std::map<std::string, FieldValue> parseFields(const std::string &data);
     std::string serializeFields(const std::map<std::string, FieldValue> &fields);
     void writeSST(const std::string &path, const std::vector<SSTEntry> &entries);
-    std::string mergeTwoRecords(const std::string& firstRecord, const std::string& secondRecord);
+    std::string mergeTwoRecords(const std::string &firstRecord, const std::string &secondRecord);
 
 public:
     LSMTree();
     void put(const std::string &key, const std::string &value);
-    void flushBatchToL0(const std::vector<std::pair<std::string, std::string>>& batch);
+    void flushBatchToL0(const std::vector<std::pair<std::string, std::string>> &batch);
     std::string get(const std::string &key);
 };
 
-#endif // LSM_TREE_H
+#endif  // LSM_TREE_H

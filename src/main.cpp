@@ -1,27 +1,33 @@
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <cstddef>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <random>
+#include <sstream>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 
 #include "coro_task.h"
 #include "executor.h"
+#include "mapped_file.h"
 #include "merge_records.h"
 #include "net.h"
 #include "uuid_v4.h"
 
-using redka::io::CoroResult;
 using redka::io::Acceptor;
+using redka::io::CoroResult;
 using redka::io::Executor;
 using redka::io::TcpSocket;
 
 const std::string WAL_FILENAME = "wal.log";
 // LSMTree db;
 
-// Hash table: u128 -> std::streampos[4]
-std::unordered_map<std::string, std::array<std::streampos, 4>> recordIdToOffset{};
+// Hash table: u128 -> std::size_t[4]
+std::unordered_map<std::string, std::array<size_t, 4>> recordIdToOffset{};
 UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
 
 // Response codes, starting from 1: errors
@@ -29,56 +35,56 @@ const int RDKAnone = 0;
 const int RDKAbad = 1;
 const int RDXbad = 2;
 
+MappedFile wal_log;
 
-std::string readFromWALFileByOffset(const std::streampos recordPos) {
-    std::ifstream logFile(WAL_FILENAME);
-    std::string record;
-    logFile.seekg(recordPos);
-    getline(logFile, record);
-    return record;
+std::string readFromWALFileByOffset(MappedFile &mmapFile, const size_t recordOffset) {
+    if (recordOffset >= mmapFile.size()) {
+        // Handle error: offset beyond file size.
+        return "";
+    }
+
+    // Find the newline from recordOffset
+    size_t end = recordOffset;
+    while (end < mmapFile.size() && mmapFile.data()[end] != '\n') {
+        ++end;
+    }
+    char *recordStart = mmapFile.data() + recordOffset;
+    size_t size = end - recordOffset;
+    return std::string(recordStart, size);
 }
 
 std::string readFromWALFileById(const std::string &recordId) {
     std::string mergedRecord;
     auto recordsOffsets = recordIdToOffset[recordId];
-    for (auto & recordOffset : recordsOffsets) {
+    for (auto &recordOffset : recordsOffsets) {
         if (recordOffset == -1)
             break;
 
-        auto previousLogEntry = readFromWALFileByOffset(recordOffset);
+        auto previousLogEntry = readFromWALFileByOffset(wal_log, recordOffset);
         mergedRecord = mergeTwoRecords(mergedRecord, previousLogEntry);
     }
     return mergedRecord;
 }
 
-std::string readRecordById(const std::string &recordId) {
-    auto walRecord = readFromWALFileById(recordId);
-    // auto sstRecord = db.get(recordId);
-    // return mergeTwoRecords(walRecord, sstRecord);
+void appendToWAL(MappedFile &mmapFile, const std::string &logEntry) {
+    mmapFile.append(logEntry + "\n");
 }
 
 // Function to write WAL to a log file
 void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
-    std::ofstream logFile;
-    logFile.open(WAL_FILENAME, std::ios::app);  // Open file in append mode
-    if (!logFile.is_open()) {
-        std::cerr << "Failed to open WAL file" << std::endl;
-    }
-
-    // Get the current offset and length, update hash table
-    std::streampos newRecordOffset = logFile.tellp();
+    size_t newRecordOffset = wal_log.size();
     if (recordIdToOffset.find(recordId) == recordIdToOffset.end()) {
-        recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
-        logFile << logEntry << std::endl;
+        appendToWAL(wal_log, logEntry);
+        recordIdToOffset[recordId] = {newRecordOffset, -1u, -1u, -1u};
     } else {
-        auto& recordsOffsets = recordIdToOffset[recordId];
+        auto &recordsOffsets = recordIdToOffset[recordId];
         bool fourWritesAreTracked = true;
-        for (auto & recordsOffset : recordsOffsets) {
+        for (auto &recordsOffset : recordsOffsets) {
             // no offset
             if (recordsOffset == -1) {
                 recordsOffset = newRecordOffset;
                 fourWritesAreTracked = false;
-                logFile << logEntry << std::endl;
+                appendToWAL(wal_log, logEntry);
                 break;
             }
         }
@@ -86,11 +92,13 @@ void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
             // Merge all four writes and add it
             std::string mergedRecord = logEntry;
             mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId));
-            recordIdToOffset[recordId] = {newRecordOffset, -1, -1, -1};
-            logFile << "{@" << recordId << " " << mergedRecord << "}" << std::endl;
+            recordIdToOffset[recordId] = {newRecordOffset, -1u, -1u, -1u};
+            std::stringstream new_record;
+            new_record << "{@" << recordId << " " << mergedRecord << "}"
+                       << "\n";
+            appendToWAL(wal_log, new_record.str());
         }
     }
-    logFile.close();
 }
 
 bool isCorrectParentheses(char firstSymbol, char secondSymbol) {
@@ -149,8 +157,8 @@ bool parseWriteMessage(const std::string &message, std::string &objectData, bool
     return true;
 }
 
-bool parseMessage(const std::string &message, std::string &objectData, bool &isRead,
-                  bool &isUpdate, std::string &updateIndex) {
+bool parseMessage(const std::string &message, std::string &objectData, bool &isRead, bool &isUpdate,
+                  std::string &updateIndex) {
     if (message.find('{') == std::string::npos && message.find('}') == std::string::npos && *message.begin() != '@') {
         // Got read query: only reference of object
         isRead = true;
@@ -183,8 +191,7 @@ CoroResult<void> handleClient(TcpSocket socket) {
                 co_await socket.WriteAll(std::span(std::to_string(RDKAbad).c_str(), 1));
                 break;
             }
-        }
-        catch (...) {
+        } catch (...) {
             gorParseError = true;
             // 'co_await' cannot be used in the handler of a try block
         }
@@ -199,8 +206,7 @@ CoroResult<void> handleClient(TcpSocket socket) {
             bool gotUnclearID = false;
             try {
                 UUIDv4::UUID::fromStrFactory(idOrRecord);
-            }
-            catch (...) {
+            } catch (...) {
                 gotUnclearID = true;
             }
             if (gotUnclearID) {
@@ -249,21 +255,20 @@ void startServer() {
 
     Executor executor(acceptor.get());
 
-
-    auto acceptTask = [](Executor* executor, Acceptor* acceptor) -> redka::io::CoroResult<void> {
+    auto acceptTask = [](Executor *executor, Acceptor *acceptor) -> redka::io::CoroResult<void> {
         std::cout << "Server listening on port 8080" << std::endl;
         for (;;) {
-             executor->Schedule(handleClient(co_await acceptor->Accept()).fire_and_forgive());
+            executor->Schedule(handleClient(co_await acceptor->Accept()).fire_and_forgive());
         }
         co_return;
     }(&executor, acceptor.get());
 
     executor.Schedule(&acceptTask);
     executor.Run();
-
 }
 
 int main() {
+    wal_log = MappedFile(WAL_FILENAME);
     startServer();
     return 0;
 }
