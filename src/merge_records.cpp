@@ -1,7 +1,8 @@
 #include <iostream>
-#include <string>
 #include <map>
 #include <regex>
+#include <sstream>
+#include <string>
 
 auto parseRecordToMap(const std::string& str) {
     std::regex re(R"(\{([^}]+)\})");
@@ -45,7 +46,7 @@ std::string convertMapToRecord(const std::map<std::string, std::pair<uint32_t, s
     return result.str();
 }
 
-void addToMergeMap(std::map<std::string, std::pair<uint32_t, std::string>> &mergeMap,
+void addToMergeMap(std::map<std::string, std::pair<uint32_t, std::string>>& mergeMap,
                    const std::map<std::string, std::string>& map) {
     for (const auto& kv : map) {
         uint32_t version = 1;
@@ -64,7 +65,6 @@ void addToMergeMap(std::map<std::string, std::pair<uint32_t, std::string>> &merg
         mergeMap[key] = std::make_pair(version, kv.second);
     }
 }
-
 
 auto mergeTwoMaps(std::map<std::string, std::string>& firstMap, std::map<std::string, std::string>& secondMap) {
     // Format: key - (version, value)
