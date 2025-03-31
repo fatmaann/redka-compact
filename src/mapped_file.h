@@ -15,6 +15,7 @@ private:
     int fd_ = -1;
     char *mapped_data_ = nullptr;
     size_t file_size_ = 0;
+    size_t records_size_ = 0;
 
 public:
     MappedFile() = default;

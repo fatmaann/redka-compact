@@ -3,6 +3,8 @@
 #include <cstring>
 #include <cstdio>
 
+size_t WAL_LOG_MAX_SIZE = 4096;
+
 MappedFile::MappedFile(const std::string &file_name) {
     if (!this->open(file_name, true)) {
         throw std::system_error(errno, std::system_category(), "File mapping failed");
@@ -33,12 +35,16 @@ bool MappedFile::open(const std::string &path, bool write) {
 
     file_size_ = st.st_size;
     if (file_size_ == 0 && write) {
-        file_size_ = 4096;
+        records_size_ = 0;
+        file_size_ = WAL_LOG_MAX_SIZE;
         if (ftruncate(fd_, file_size_) == -1) {
             close(fd_);
             fd_ = -1;
             return false;
         }
+    }
+    else {
+        records_size_ = file_size_;
     }
 
     mapped_data_ = static_cast<char *>(
@@ -57,7 +63,7 @@ char *MappedFile::data() const {
     return mapped_data_;
 }
 size_t MappedFile::size() const {
-    return file_size_;
+    return records_size_;
 }
 
 bool MappedFile::resize(size_t new_size) {
@@ -77,24 +83,17 @@ bool MappedFile::resize(size_t new_size) {
 }
 
 void MappedFile::append(const std::string &logEntry) {
-    // Calculate new size (existing size + entry length)
-    size_t entrySize = logEntry.size();
-    size_t newSize = file_size_ + entrySize;
-
-    // Increase file size
-    if (!resize(newSize)) {
-        perror("Failed to resize file");
+    if (records_size_ >= file_size_) {
+        perror("WAL log is too big");
         return;
     }
 
     // Append the log entry at the old file end
-    memcpy(mapped_data_ + file_size_, logEntry.c_str(), logEntry.size());
-
-    // Update mapping size
-    file_size_ = newSize;
+    memcpy(mapped_data_ + records_size_, logEntry.data(), logEntry.size());
+    records_size_ += logEntry.size();
 
     // Flush changes to disk
-    if (msync(mapped_data_, newSize, MS_SYNC) == -1) {
+    if (msync(mapped_data_, file_size_, MS_SYNC) == -1) {
         perror("msync");
     }
 }
