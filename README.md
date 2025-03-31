@@ -67,7 +67,7 @@ Message sent: {name:"Alice"}
 Server response: 6e88d1ce-ddd4-4a97-8e96-29a00adfc8a1
 ```
    
-3. Запрос на обновление существующего объекта. (`{@b0b-123 name:"Alice" address:"Wonderland"}`; a write if sent by a client; writes may use versioning in the usual RDX way, e.g. `{@b0b-123 address@2:"Tea Party"}` --- в ответ получаем идентификатор)\
+2. Запрос на обновление существующего объекта. (`{@b0b-123 name:"Alice" address:"Wonderland"}`; a write if sent by a client; writes may use versioning in the usual RDX way, e.g. `{@b0b-123 address@2:"Tea Party"}` --- в ответ получаем идентификатор)\
 Вывод тестового клиента при отправке запросов такого вида:
 ```
 Connected to the server
@@ -80,7 +80,7 @@ Message sent: {@6e88d1ce-ddd4-4a97-8e96-29a00adfc8a1 address@2:"Home"}
 Server response: 6e88d1ce-ddd4-4a97-8e96-29a00adfc8a1
 ```
 
-4. Запрос на чтение определенного объекта по его идентификатору (`b0b-123` (a reference) is a query of a specific object if sent by a client --- в ответ получаем сам объект)\
+3. Запрос на чтение определенного объекта по его идентификатору (`b0b-123` (a reference) is a query of a specific object if sent by a client --- в ответ получаем сам объект)\
 Вывод тестового клиента при отправке запросов такого вида:
 ```
 Connected to the server
@@ -88,7 +88,7 @@ Message sent: 6e88d1ce-ddd4-4a97-8e96-29a00adfc8a1
 Server response: {address@2:"Home" name:"Alice" surname:"Liddell"}
 ```
 
-Также по согласованию `RDKAnone`, `RDKAbad`; `RDXbad` выражаются числовыми кодами:
+Также, по согласованию, `RDKAnone`, `RDKAbad`; `RDXbad` выражаются числовыми кодами:
 ```
 // Response codes, starting from 1: errors
 const int RDKAnone = 0;
