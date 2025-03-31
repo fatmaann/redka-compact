@@ -249,22 +249,10 @@ std::string readRecordById(const std::string& recordId) {
     std::string walData = readFromWALFileById(recordId);
     
     std::string sstData = readFromSSTFileById(recordId);
-    
-    if (!walData.empty() && !sstData.empty()) {
-        std::string merged = mergeTwoRecords(walData, sstData);
-        return merged;
-    }
 
-    else if (!walData.empty()) {
-        return walData;
-    }
+    std::string merged = mergeTwoRecords(walData, sstData);
 
-    else if (!sstData.empty()) {
-        return sstData;
-    }
-    else {
-        return "";
-    }
+    return merged;
 }
 
 // Set up the server and listen for client connections
