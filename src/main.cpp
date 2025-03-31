@@ -70,7 +70,6 @@ void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
         appendToWAL(wal_log, logEntry);
         recordIdToOffset[recordId] = {std::make_pair(newRecordOffset, logEntry.size()),
                                       {-1u, 0}, {-1u, 0}, {-1u, 0}};
-        std::cout << newRecordOffset << " " << logEntry.size() << std::endl;
     } else {
         auto &recordsOffsets = recordIdToOffset[recordId];
         bool fourWritesAreTracked = true;
