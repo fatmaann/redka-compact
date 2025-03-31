@@ -25,7 +25,8 @@ using redka::io::Executor;
 using redka::io::TcpSocket;
 
 const std::string WAL_FILENAME = "wal.log";
-const size_t MAX_WAL_SIZE = 4ULL * 1024 * 1024 * 1024; // 4 GB
+// const size_t MAX_WAL_SIZE = 4ULL * 1024 * 1024 * 1024; // 4 GB
+const size_t MAX_WAL_SIZE = 1;
 bool wal_size_exceeded = false;
 LSMTree db;
 
@@ -69,10 +70,12 @@ void appendToWAL(MappedFile &mmapFile, const std::string &logEntry) {
 // Function to write WAL to a log file
 void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
     if (wal_log.size() > MAX_WAL_SIZE) {
+        std::cout << "wal_log.size() > MAX_WAL_SIZE" << std::endl;
         std::vector<std::pair<std::string, std::string>> batch;
         for (const auto& [id, offsets] : recordIdToOffset) {
             std::string record = readFromWALFileById(id);
             if (!record.empty()) {
+                std::cout << "+ " << id << " " << record << std::endl;
                 batch.emplace_back(id, record);
             }
         }
@@ -183,6 +186,25 @@ bool parseMessage(const std::string &message, std::string &objectData, bool &isR
     return parseWriteMessage(message, objectData, isUpdate, updateIndex);
 }
 
+std::string readFromSSTFileById(const std::string& recordId) {
+    std::string sstData = db.get(recordId);
+    sstData = '{' + sstData + '}';
+    return sstData;
+}
+
+std::string readRecordById(const std::string& recordId) {
+    std::cout << recordId << std::endl;
+    std::string walData = readFromWALFileById(recordId);
+    
+    std::string sstData = readFromSSTFileById(recordId);
+
+    std::string merged = mergeTwoRecords(walData, sstData);
+
+    std::cout << walData << " " << sstData << " " << merged << std::endl;
+
+    return merged;
+}
+
 // Handle the client connection
 CoroResult<void> handleClient(TcpSocket socket) {
     std::array<char, 1024> buffer;
@@ -230,11 +252,11 @@ CoroResult<void> handleClient(TcpSocket socket) {
             }
 
             // Key not found
-            if (recordIdToOffset.find(idOrRecord) == recordIdToOffset.end()) {
-                co_await socket.WriteAll(std::span(std::to_string(RDKAnone).c_str(), 1));
-                break;
-            }
-            auto requestedRecord = readFromWALFileById(idOrRecord);
+            // if (recordIdToOffset.find(idOrRecord) == recordIdToOffset.end()) {
+            //     co_await socket.WriteAll(std::span(std::to_string(RDKAnone).c_str(), 1));
+            //     break;
+            // }
+            auto requestedRecord = readRecordById(idOrRecord);
             co_await socket.WriteAll(std::span(requestedRecord.c_str(), requestedRecord.length()));
             break;
         }
@@ -253,20 +275,6 @@ CoroResult<void> handleClient(TcpSocket socket) {
             co_await socket.WriteAll(std::span(idOfRecordToUpdate.c_str(), idOfRecordToUpdate.length()));
         }
     }
-}
-
-std::string readFromSSTFileById(const std::string& recordId) {
-    return db.get(recordId);
-}
-
-std::string readRecordById(const std::string& recordId) {
-    std::string walData = readFromWALFileById(recordId);
-    
-    std::string sstData = readFromSSTFileById(recordId);
-
-    std::string merged = mergeTwoRecords(walData, sstData);
-
-    return merged;
 }
 
 // Set up the server and listen for client connections
