@@ -27,8 +27,8 @@ using redka::io::TcpSocket;
 const std::string WAL_FILENAME = "wal.log";
 LSMTree db;
 
-// Hash table: u128 -> std::size_t[4]
-std::unordered_map<std::string, std::array<size_t, 4>> recordIdToOffset{};
+// Hash table: u128 -> std::tuple[size_t, size_t][4] (for records offsets and lengths for faster reading)
+std::unordered_map<std::string, std::array<std::pair<size_t, size_t>, 4>> recordIdToOffset{};
 UUIDv4::UUIDGenerator<std::mt19937_64> uuidGenerator;
 
 // Response codes, starting from 1: errors
@@ -36,39 +36,32 @@ const int RDKAnone = 0;
 const int RDKAbad = 1;
 const int RDXbad = 2;
 
-MappedFile wal_log;
+MappedFile wal_log = MappedFile(WAL_FILENAME);
 
-std::string readFromWALFileByOffset(MappedFile &mmapFile, const size_t recordOffset) {
+std::string readFromWALFileByOffset(MappedFile &mmapFile, const size_t recordOffset, const size_t recordLength) {
     if (recordOffset >= mmapFile.size()) {
         // Handle error: offset beyond file size.
         return "";
     }
-
-    // Find the newline from recordOffset
-    size_t end = recordOffset;
-    while (end < mmapFile.size() && mmapFile.data()[end] != '\n') {
-        ++end;
-    }
     char *recordStart = mmapFile.data() + recordOffset;
-    size_t size = end - recordOffset;
-    return std::string(recordStart, size);
+    return std::string(recordStart, recordLength);
 }
 
 std::string readFromWALFileById(const std::string &recordId) {
     std::string mergedRecord;
-    auto recordsOffsets = recordIdToOffset[recordId];
-    for (auto &recordOffset : recordsOffsets) {
-        if (recordOffset == -1)
+    auto recordsMetadata = recordIdToOffset[recordId];
+    for (auto &recordMetadata : recordsMetadata) {
+        if (recordMetadata.first == -1)
             break;
 
-        auto previousLogEntry = readFromWALFileByOffset(wal_log, recordOffset);
+        auto previousLogEntry = readFromWALFileByOffset(wal_log, recordMetadata.first, recordMetadata.second);
         mergedRecord = mergeTwoRecords(mergedRecord, previousLogEntry);
     }
     return mergedRecord;
 }
 
 void appendToWAL(MappedFile &mmapFile, const std::string &logEntry) {
-    mmapFile.append(logEntry + "\n");
+    mmapFile.append(logEntry + '\n');
 }
 
 // Function to write WAL to a log file
@@ -76,14 +69,16 @@ void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
     size_t newRecordOffset = wal_log.size();
     if (recordIdToOffset.find(recordId) == recordIdToOffset.end()) {
         appendToWAL(wal_log, logEntry);
-        recordIdToOffset[recordId] = {newRecordOffset, -1u, -1u, -1u};
+        recordIdToOffset[recordId] = {std::make_pair(newRecordOffset, logEntry.size()),
+                                      {-1u, 0}, {-1u, 0}, {-1u, 0}};
     } else {
         auto &recordsOffsets = recordIdToOffset[recordId];
         bool fourWritesAreTracked = true;
-        for (auto &recordsOffset : recordsOffsets) {
+        for (auto &recordMetadata : recordsOffsets) {
             // no offset
-            if (recordsOffset == -1) {
-                recordsOffset = newRecordOffset;
+            if (recordMetadata.first == -1) {
+                recordMetadata.first = newRecordOffset;
+                recordMetadata.second = logEntry.size();
                 fourWritesAreTracked = false;
                 appendToWAL(wal_log, logEntry);
                 break;
@@ -93,10 +88,10 @@ void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
             // Merge all four writes and add it
             std::string mergedRecord = logEntry;
             mergedRecord = mergeTwoRecords(mergedRecord, readFromWALFileById(recordId));
-            recordIdToOffset[recordId] = {newRecordOffset, -1u, -1u, -1u};
             std::stringstream new_record;
-            new_record << "{@" << recordId << " " << mergedRecord << "}"
-                       << "\n";
+            new_record << "{@" << recordId << " " << mergedRecord << "}";
+            recordIdToOffset[recordId] = {std::make_pair(newRecordOffset, new_record.str().size()),
+                                          {-1u, 0}, {-1u, 0}, {-1u, 0}};
             appendToWAL(wal_log, new_record.str());
         }
     }
@@ -283,7 +278,6 @@ void startServer() {
 }
 
 int main() {
-    wal_log = MappedFile(WAL_FILENAME);
     startServer();
     return 0;
 }
