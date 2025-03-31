@@ -13,6 +13,7 @@
 
 #include "coro_task.h"
 #include "executor.h"
+#include "compact.h"
 #include "mapped_file.h"
 #include "merge_records.h"
 #include "net.h"
