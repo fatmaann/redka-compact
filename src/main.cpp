@@ -24,7 +24,7 @@ using redka::io::Executor;
 using redka::io::TcpSocket;
 
 const std::string WAL_FILENAME = "wal.log";
-// LSMTree db;
+LSMTree db;
 
 // Hash table: u128 -> std::size_t[4]
 std::unordered_map<std::string, std::array<size_t, 4>> recordIdToOffset{};
@@ -237,6 +237,32 @@ CoroResult<void> handleClient(TcpSocket socket) {
             writeWALToFile(idOrRecord, idOfRecordToUpdate);
             co_await socket.WriteAll(std::span(idOfRecordToUpdate.c_str(), idOfRecordToUpdate.length()));
         }
+    }
+}
+
+std::string readFromSSTFileById(const std::string& recordId) {
+    return db.get(recordId);
+}
+
+std::string readRecordById(const std::string& recordId) {
+    std::string walData = readFromWALFileById(recordId);
+    
+    std::string sstData = readFromSSTFileById(recordId);
+    
+    if (!walData.empty() && !sstData.empty()) {
+        std::string merged = mergeTwoRecords(walData, sstData);
+        return merged;
+    }
+
+    else if (!walData.empty()) {
+        return walData;
+    }
+
+    else if (!sstData.empty()) {
+        return sstData;
+    }
+    else {
+        return "";
     }
 }
 
