@@ -94,9 +94,9 @@ void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
         recordIdToOffset[recordId] = {std::make_pair(newRecordOffset, logEntry.size()),
                                       {-1u, 0}, {-1u, 0}, {-1u, 0}};
     } else {
-        auto &recordsOffsets = recordIdToOffset[recordId];
+        auto &recordsMetadata = recordIdToOffset[recordId];
         bool fourWritesAreTracked = true;
-        for (auto &recordMetadata : recordsOffsets) {
+        for (auto &recordMetadata : recordsMetadata) {
             // no offset
             if (recordMetadata.first == -1) {
                 recordMetadata.first = newRecordOffset;
