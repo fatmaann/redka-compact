@@ -26,6 +26,7 @@ namespace redka::io {
         TcpSocket(Acceptor* acceptor, int fd)
             : parent_(acceptor)
             , fd_(fd) {
+            assert(parent_);
         }
 
         TcpSocket(const TcpSocket&) = delete;

@@ -52,7 +52,9 @@ TcpSocket::~TcpSocket() {
         close(fd_);
     }
 
-    parent_->events_.erase(fd_);
+    if (parent_) {
+        parent_->events_.erase(fd_);
+    }
 }
 
 Acceptor::~Acceptor() {

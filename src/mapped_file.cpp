@@ -1,5 +1,6 @@
 #include "mapped_file.h"
 
+#include <cstring>
 #include <cstdio>
 
 MappedFile::MappedFile(const std::string &file_name) {
