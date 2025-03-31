@@ -25,6 +25,8 @@ using redka::io::Executor;
 using redka::io::TcpSocket;
 
 const std::string WAL_FILENAME = "wal.log";
+const size_t MAX_WAL_SIZE = 4ULL * 1024 * 1024 * 1024; // 4 GB
+bool wal_size_exceeded = false;
 LSMTree db;
 
 // Hash table: u128 -> std::size_t[4]
@@ -73,6 +75,23 @@ void appendToWAL(MappedFile &mmapFile, const std::string &logEntry) {
 
 // Function to write WAL to a log file
 void writeWALToFile(const std::string &logEntry, std::string const &recordId) {
+    if (wal_log.size() > MAX_WAL_SIZE) {
+        std::vector<std::pair<std::string, std::string>> batch;
+        for (const auto& [id, offsets] : recordIdToOffset) {
+            std::string record = readFromWALFileById(id);
+            if (!record.empty()) {
+                batch.emplace_back(id, record);
+            }
+        }
+        
+        if (!batch.empty()) {
+            db.flushBatchToL0(batch);
+        }
+        
+        wal_log.truncate();
+        recordIdToOffset.clear();
+    }
+
     size_t newRecordOffset = wal_log.size();
     if (recordIdToOffset.find(recordId) == recordIdToOffset.end()) {
         appendToWAL(wal_log, logEntry);

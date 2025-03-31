@@ -98,3 +98,36 @@ void MappedFile::append(const std::string &logEntry) {
         perror("msync");
     }
 }
+
+void MappedFile::truncate() {
+    if (fd_ == -1) return;
+
+    // 1. Удаляем текущее отображение памяти
+    if (mapped_data_) {
+        munmap(mapped_data_, file_size_);
+        mapped_data_ = nullptr;
+    }
+
+    // 2. Усекаем файл до нулевого размера
+    if (ftruncate(fd_, 0) == -1) {
+        throw std::system_error(errno, std::system_category(), "ftruncate failed");
+    }
+
+    // 3. Устанавливаем начальный размер (например, 4KB)
+    file_size_ = 4096;
+    if (ftruncate(fd_, file_size_) == -1) {
+        close(fd_);
+        fd_ = -1;
+        throw std::system_error(errno, std::system_category(), "Initial truncate failed");
+    }
+
+    // 4. Создаем новое отображение
+    mapped_data_ = static_cast<char*>(
+        mmap(nullptr, file_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0));
+    if (mapped_data_ == MAP_FAILED) {
+        mapped_data_ = nullptr;
+        close(fd_);
+        fd_ = -1;
+        throw std::system_error(errno, std::system_category(), "mmap failed after truncate");
+    }
+}

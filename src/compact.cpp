@@ -42,10 +42,7 @@ void LSMTree::mergeEntries(SSTEntry &target, const SSTEntry &source) {
     std::string target_record_with_braces = "{" + target_record + "}";
     std::string source_record_with_braces = "{" + source_record + "}";
 
-    std::cout << target_record_with_braces << ' ' << source_record_with_braces << '\n';
-
     std::string merged_record = mergeTwoRecords(target_record_with_braces, source_record_with_braces);
-    std::cout << merged_record << "\n\n";
     target.fields = parseFields(merged_record);
 }
 

@@ -26,4 +26,5 @@ public:
     size_t size() const;
     bool resize(size_t new_size);
     void append(const std::string &);
+    void truncate();
 };
