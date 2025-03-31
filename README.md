@@ -31,7 +31,7 @@ with strong influence of Riak's BitCask (see Petrov's book).
 
 Все файлы mmaped и их содержимое обновляется напрямую в RAM. Для этого испольузется класс `MappedFile`, описанный в файлах `mapped_file`.
 
-1. Запросы:
+### 1. Запросы:
 
 
 ```
@@ -125,7 +125,7 @@ Server response: 1
 Не все некорректные запросы (в основном с некорректным JDR форматом) получают ответы `RDKAbad` или `RDXbad`, так как сосредоточились на более важной части проекта и отставили какие-то подобные моменты.
 
 
-2. WAL логика
+###  2. WAL логика
 
 ```
       - the main process maintains the WAL (write ahead log)
@@ -206,3 +206,120 @@ std::string readFromWALFileById(const std::string &recordId) {
 }
   ```
 </details>
+
+
+### 3. Логика компактизации
+
+```
+      - once a log chunk reaches the size limit, redka starts a new one; the total size of all
+      chunks can not exceed 4GB. Older chunks are deleted once the data is moved to SST files. 
+```
+
+Готово: При превышении размера WAL (`MAX_WAL_SIZE`) все текущие записи из `recordIdToOffset` собираются в батч и сохраняются в SST-уровень `L0` через `db.flushBatchToL0()`.
+После успешного сохранения WAL очищается (`truncate`) и хеш-таблица сбрасывается.
+
+
+
+<details>
+  <summary>Код из функции `writeWALToFile`</summary>
+    
+  ```C++
+if (wal_log.size() > MAX_WAL_SIZE) {
+        std::cout << "wal_log.size() > MAX_WAL_SIZE" << std::endl;
+        std::vector<std::pair<std::string, std::string>> batch;
+        for (const auto& [id, offsets] : recordIdToOffset) {
+            std::string record = readFromWALFileById(id);
+            if (!record.empty()) {
+                std::cout << "+ " << id << " " << record << std::endl;
+                batch.emplace_back(id, record);
+            }
+        }
+        
+        if (!batch.empty()) {
+            db.flushBatchToL0(batch);
+        }
+        
+        wal_log.truncate();
+        recordIdToOffset.clear();
+    }
+  ```
+</details>
+
+#### 3.1 Компрессия данных
+
+```
+      - the compaction process redka-compact converts complete log chunks into SST files and merges SST files into
+      bigger SST files, as every LSM database is doing. The goal is to keep the number of SST files under some limit. 
+```
+
+В качестве архитектуры `Compact` было решено использовать логику из [CockroachDB](https://www.cockroachlabs.com/docs/stable/architecture/storage-layer#lsm-levels).
+Основная идея такова, что есть 10 уровней хранения SST-файлов (`L0-L9`), организованных по принципу "чем новее данные - тем ниже уровень". Данные всегда записываются в `L0`,
+содержащий самые свежие записи. Каждый последующий уровень хранит более старые данные и имеет больший допустимый размер - при достижении лимита в `0^(номер уровня)` файлов
+(например, 100 файлов для `L2`) запускается процесс компактизации. Во время компактизации файлы текущего уровня сливаются в один отсортированный SST-файл,
+который перемещается на следующий уровень.
+
+```C++
+
+class LSMTree {
+private:
+    std::vector<std::vector<std::string>> levels;
+
+    void ensureDbDir();
+    void loadLevels();
+    void mergeEntries(SSTEntry &target, const SSTEntry &source);
+    void compactLevel(int level);
+    std::vector<SSTEntry> readSST(const std::string &path);
+    std::map<std::string, FieldValue> parseFields(const std::string &data);
+    std::string serializeFields(const std::map<std::string, FieldValue> &fields);
+    void writeSST(const std::string &path, const std::vector<SSTEntry> &entries);
+
+public:
+    LSMTree();
+    void put(const std::string &key, const std::string &value);
+    void flushBatchToL0(const std::vector<std::pair<std::string, std::string>> &batch);
+    std::string get(const std::string &key);
+};
+
+```
+
+<details>
+  <summary>Код функции `compactLevel(int level)`</summary>
+    
+  ```C++
+if (levels[level].size() >= std::pow(10, level + 1)) {
+    // ... merging logic ...
+    std::string new_sst = DB_DIR + "/L" + std::to_string(level + 1) + "/" + ...;
+    writeSST(new_sst, entries_to_write);
+    compactLevel(level + 1);  // Recursive compaction to next level
+}
+  ```
+</details>
+
+#### 3.2 Объединенное чтение
+```
+To answer a query, redka-talk merges entries from the SST files and entries from the log.
+```
+
+При запросе на чтение по ключу программа смотрит его наличие в WAL-файле и в SST-файлах. Полученные результаты мержит.
+<details>
+  <summary>Код функции `readRecordById(recordId)`</summary>
+    
+  ```C++
+std::string readFromSSTFileById(const std::string& recordId) {
+    std::string sstData = db.get(recordId);
+    sstData = '{' + sstData + '}';
+    return sstData;
+}
+
+std::string readRecordById(const std::string& recordId) {
+    std::string walData = readFromWALFileById(recordId);
+    
+    std::string sstData = readFromSSTFileById(recordId);
+
+    std::string merged = mergeTwoRecords(walData, sstData);
+
+    return merged;
+}
+  ```
+</details>
+
