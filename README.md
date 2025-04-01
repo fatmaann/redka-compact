@@ -1,4 +1,4 @@
-# Redka Talk
+# Redka Compact
 
 A key-value LSM database inspired by BitCask.
 
@@ -178,7 +178,10 @@ Server response: 1
   ```
 где `recordIdToOffset` это хеш-таблица. 
 </details>
+
 Для чтения из WAL используется функция `readFromWALFileById`, которая использует эту хеш-таблицу, как описано:
+
+
 <details>
   <summary>код readFromWALFileById</summary>
     
@@ -295,6 +298,18 @@ if (levels[level].size() >= std::pow(10, level + 1)) {
   ```
 </details>
 
+Реализована поддержка версионирования полей через синтаксис `field@version`. При слиянии записей сохраняется только последняя версия каждого поля.
+
+  ```C++
+void LSMTree::mergeEntries(SSTEntry &target, const SSTEntry &source) {
+    std::string target_record = serializeFields(target.fields);
+    std::string source_record = serializeFields(source.fields);
+    std::string merged_record = mergeTwoRecords("{" + target_record + "}", 
+                                              "{" + source_record + "}");
+    target.fields = parseFields(merged_record);
+}
+  ```
+
 #### 3.2 Объединенное чтение
 ```
 To answer a query, redka-talk merges entries from the SST files and entries from the log.
@@ -322,4 +337,21 @@ std::string readRecordById(const std::string& recordId) {
 }
   ```
 </details>
+
+#### 3.3 Формат SST-файлов
+
+SST-файлы организованы в бинарном формате, оптимизированном для эффективного хранения и быстрого поиска данных. Формат состоит из трех основных частей: заголовка, области данных и индексной области. Заголовок (`SSTHeader`) содержит метаинформацию о файле, включая количество записей и смещение индексной области. Основная часть файла представляет собой последовательность записей, где каждая запись хранит ключ и соответствующие ему значения в сериализованном виде. Для обеспечения быстрого доступа к данным в конце файла располагается индекс (`SSTIndexEntry`), который содержит информацию о расположении каждой записи в файле, позволяя быстро находить нужные данные без полного сканирования файла.
+
+```C++
+struct SSTHeader {
+    uint32_t entry_count;
+    size_t index_offset;
+};
+
+struct SSTIndexEntry {
+    uint32_t key_length;
+    size_t data_offset;
+    size_t data_length;
+};
+```
 
